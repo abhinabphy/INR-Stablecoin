@@ -1,94 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
-/*
- * Production-style custom INR/USD oracle
- * - Feeds price of 1 USD in INR with 8 decimals
- * - Access-controlled submitter(s)
- * - Chainlink AggregatorV3-compatible interface
- *
- * NOTES:
- * - Use a multisig (e.g. Safe) as DEFAULT_ADMIN_ROLE for production.
- * - Have your off-chain bot call submitPrice() from an ORACLE_ROLE address.
- */
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "./interfaces/ITwaporacle.sol";
 
-interface IAggregatorV3 {
-    function decimals() external view returns (uint8);
-    function description() external view returns (string memory);
-    function version() external view returns (uint256);
 
-    function getRoundData(uint80 _roundId)
-        external
-        view
-        returns (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        );
-
-    function latestRoundData()
-        external
-        view
-        returns (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        );
-}
-
-/**
- * Minimal AccessControl-like pattern to avoid external deps.
- * (If you prefer OpenZeppelin, you can replace this with OZ AccessControl.)
- */
-abstract contract SimpleAccessControl {
-    mapping(bytes32 => mapping(address => bool)) private _roles;
-
-    bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
-
-    event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
-    event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
-
-    modifier onlyRole(bytes32 role) {
-        require(hasRole(role, msg.sender), "ACCESS_CONTROL: missing role");
-        _;
-    }
-
-    constructor() {
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-    }
-
-    function hasRole(bytes32 role, address account) public view returns (bool) {
-        return _roles[role][account];
-    }
-
-    function grantRole(bytes32 role, address account) public onlyRole(DEFAULT_ADMIN_ROLE) {
-        _grantRole(role, account);
-    }
-
-    function revokeRole(bytes32 role, address account) public onlyRole(DEFAULT_ADMIN_ROLE) {
-        _revokeRole(role, account);
-    }
-
-    function _grantRole(bytes32 role, address account) internal {
-        if (!_roles[role][account]) {
-            _roles[role][account] = true;
-            emit RoleGranted(role, account, msg.sender);
-        }
-    }
-
-    function _revokeRole(bytes32 role, address account) internal {
-        if (_roles[role][account]) {
-            _roles[role][account] = false;
-            emit RoleRevoked(role, account, msg.sender);
-        }
-    }
-}
-
-contract InrUsdOracle is IAggregatorV3, SimpleAccessControl {
+contract InrUsdOracle is ITwaporacle, AccessControl {
     bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
 
     // 1 USD in INR, with 8 decimals. Example: 83.51230000 INR = 8_351_230_000
