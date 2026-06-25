@@ -27,6 +27,8 @@ contract Bharat is ERC20,AccessControl,IBharat{
         require(msg.sender != address(0), "Owner address cannot be zero");
         contractMetadataURI=_contractMetadataURI;
         _grantRole(DEFAULT_ADMIN_ROLE,msg.sender);
+        //should be checked if needed or not, as the vaultManager will be set after deployment
+        _grantRole(MINTER_ROLE, msg.sender); // Grant the deployer the MINTER_ROLE
         
     }
   

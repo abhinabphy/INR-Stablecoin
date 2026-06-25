@@ -126,7 +126,7 @@ contract Vaultmanager is ReentrancyGuard, IVaultmanager,Ownable {
     //                Liquidation
     // ==================================================
     /// @inheritdoc IVaultmanager
-    function liquidate(uint256 id) external nonReentrant {
+    function liquidate(uint256 id) external nonReentrant returns (uint256 auctionId) {
         Vault storage v = vaults[id];
 
         require(v.debt_amount > 0, "No debt");
@@ -145,7 +145,7 @@ contract Vaultmanager is ReentrancyGuard, IVaultmanager,Ownable {
         v.debt_amount = 0;
         v.seized = true;
 
-        liquidationEngine.startAuction{ value: collateral }(
+        uint256 auctionId=liquidationEngine.startAuction{ value: collateral }(
             id,
             collateral,
             debtWithPenalty,

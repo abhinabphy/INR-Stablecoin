@@ -9,7 +9,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import { SD59x18 ,sd,convert} from "@prb-math/SD59x18.sol";
+import { SD59x18 ,sd,wrap,unwrap,convert} from "@prb-math/SD59x18.sol";
 
 
 contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Ownable {
@@ -42,8 +42,8 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
     }
   
     ///set the decay constant and emission rate for the auction pricing model
-    uint256 internal decayConstant; // scaled 1e18
-    uint256 internal emissionRate; // tokens-per-second scaled 1e18
+    uint256 internal decayConstant=0.00019e18; // scaled 1e18
+    uint256 internal emissionRate=0.00027e18; // tokens-per-second scaled 1e18
     uint256 internal constant SECONDS_IN_A_YEAR = 31_536_000; // 365 days
     uint256 internal AuctionCount;
     IVaultmanager public vaultManager;
@@ -52,7 +52,7 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
     uint256 AuctionIdCounter;
 
     mapping (uint256 => Auction) public auctions;
-    event AuctionStarted(uint256 indexed auctionId, address indexed asset, uint256 assetAmount, address paymentToken);
+    event AuctionStarted(uint256 indexed auctionId,uint256 indexed vaultID, uint256 collateralAmount, uint256 debtAmount);
     event Purchased(uint256 indexed auctionId, address indexed buyer, uint256 collateralBought, uint256 cost);
     event RefundCredited(address indexed user, address indexed paymentToken, uint256 amount);
     event AuctionEnded(uint256 indexed auctionId);
@@ -76,16 +76,17 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
         uint256 collateralETH,
         uint256 debtToCoverForAuction,
         address vaultOwner
-    ) external payable whenNotPaused() nonReentrant onlyVaultManager {
+    ) external payable whenNotPaused() nonReentrant onlyVaultManager 
+    returns (uint256 auctionId) {
      require (vaultOwner != address(0), "Invalid vault owner");
     
       ///calculate fairinitialPrice using the TWAP oracle price at the time of liquidation
       uint256 price_of_eth = vaultManager.getEthPrice();
 
-      AuctionIdCounter++;
+       auctionId = AuctionIdCounter;
       Auction storage auction = auctions[AuctionIdCounter];
         
-        auction.id =AuctionIdCounter;
+        auction.id =auctionId;
         auction.vaultId = vaultId;
         auction.asset = address(0); // Assuming ETH as collateral
         auction.collateralRemaining = collateralETH;
@@ -94,7 +95,9 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
         auction.settled = false;
         auction.beneficiary = vaultOwner;
         auction.initialPrice = price_of_eth*1e10; // Set the floor price based on the TWAP oracle price
-        emit AuctionStarted(vaultId, address(0), collateralETH, address(bharatToken));
+        emit AuctionStarted(AuctionIdCounter,vaultId, collateralETH, debtToCoverForAuction);
+        AuctionIdCounter++;
+        return auctionId;
 
     }
     ///@notice allows a user to buy collateral from an active auction by paying the current price in Bharat stablecoins
@@ -115,12 +118,12 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
          "Stable amount must be greater than zero");
          require(auction.collateralRemaining>= collateralAmount, "Not enough collateral remaining");
          //use SD59x18 to calculate the current price of the collateral based on the auction parameters
-         SD59x18 quantityFixed=int256(collateralAmount).sd();
+         SD59x18 quantityFixed=wrap(int256(collateralAmount));
          int256 timeElapsed = int256(block.timestamp - auction.lastAuctionStartTime);
          SD59x18 timeElapsedFixed = convert(timeElapsed);
-         SD59x18 decayFixed = int256(decayConstant).sd();
-         SD59x18 emissionRateFixed = int256(emissionRate).sd();
-         SD59x18 initialPriceFixed = int256(auction.initialPrice).sd();
+         SD59x18 decayFixed = wrap(int256(decayConstant));
+         SD59x18 emissionRateFixed = wrap(int256(emissionRate));
+         SD59x18 initialPriceFixed = wrap(int256(auction.initialPrice));
         uint256 currentPrice = purchasePrice(quantityFixed,timeElapsedFixed,decayFixed,initialPriceFixed,emissionRateFixed);
         require(currentPrice <= maxAcceptablePrice, "Current price exceeds max acceptable price");
         //require allowed payment is sent with the transaction
@@ -130,7 +133,7 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
         // compute seconds-of-emissions purchased = quantity / emissionRate (all in 59.18)
         SD59x18 secondsOfEmissionsPurchased = quantityFixed.div(emissionRateFixed);
         // compute new lastAuctionStartTime = lastAuctionStartTime + secondsOfEmissionsPurchased
-        auction.lastAuctionStartTime += secondsOfEmissionsPurchased.intoUint256();
+        auction.lastAuctionStartTime += uint256(unwrap(secondsOfEmissionsPurchased));
         auction.collateralRemaining -= collateralAmount;
         auction.debtToCover-=int256(currentPrice);
         //transfer the collateral to the buyer
@@ -138,10 +141,9 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
         require(success, "Transfer failed.");
         emit Purchased(auctionId, msg.sender, collateralAmount, currentPrice);
         //if the debtToCover is non positive, mark the auction as settled and transfer any remaining collateral to the beneficiary
-        if(auction.debtToCover <= 0){
+        if(auction.debtToCover <= 0 || auction.collateralRemaining == 0){
             settleAuction(auctionId);
-        }
-        emit AuctionEnded(auctionId);      
+        }    
     }
     ///@notice calculates the current purchase price of the collateral based on the auction parameters 
     ///and the time elapsed since the auction started
@@ -151,9 +153,9 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
     function purchasePrice(SD59x18 _quantityFixed,SD59x18 _timeElapsedFixed,SD59x18 _decayFixed,SD59x18 initialPrice,SD59x18 emissionRateFixed) internal view returns (uint256){
        SD59x18 expDecayQuantity = ((_decayFixed.mul(_quantityFixed)).div(emissionRateFixed)).exp();
          SD59x18 expDecayTime = (_decayFixed.mul(_timeElapsedFixed)).exp();
-          SD59x18 numerator = initialPrice.div(_decayFixed).mul(expDecayQuantity.sub(sd(1)));
+          SD59x18 numerator = initialPrice.div(_decayFixed).mul(expDecayQuantity.sub(wrap(1e18)));
           SD59x18 totalCost = numerator.div(expDecayTime);
-          return totalCost.intoUint256();
+          return uint256(unwrap(totalCost));
 
     }
 
@@ -161,7 +163,7 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
     function settleAuction(uint256 auctionId) internal {
         Auction storage auction = auctions[auctionId];
         require(!auction.settled, "Auction already settled");
-        require(auction.debtToCover <= 0, "Auction not yet completed");
+        require(auction.debtToCover <= 0 || auction.collateralRemaining==0, "Auction not yet completed");
         auction.settled = true;
         address recipient = auction.beneficiary;
         //transfer any remaining collateral to the owner of the vault and also send the negative debt to the vaultowner
@@ -214,7 +216,7 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
         // Use the exact same math setup as buyCollateral
         SD59x18 quantityFixed = int256(amountToBuy).sd();
         int256 timeElapsed = int256(block.timestamp - auction.lastAuctionStartTime);
-        SD59x18 timeElapsedFixed = convert(timeElapsed); 
+        SD59x18 timeElapsedFixed = wrap(timeElapsed); 
         SD59x18 decayFixed = int256(decayConstant).sd();
         SD59x18 emissionRateFixed = int256(emissionRate).sd();
         SD59x18 initialPriceFixed = int256(auction.initialPrice).sd();

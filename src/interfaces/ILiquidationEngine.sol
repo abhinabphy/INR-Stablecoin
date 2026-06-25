@@ -4,7 +4,8 @@ interface ILiquidationEngine {
         uint256 collateralETH,
         uint256 debtToCover,
         address vaultOwner
-    ) external payable;
+    ) external payable
+    returns (uint256 auctionId);
 
     function buyCollateral(
         uint256 auctionId,

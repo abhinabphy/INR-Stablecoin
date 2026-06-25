@@ -106,7 +106,7 @@ interface IVaultmanager {
     /// @param vaultid The vault identifier to liquidate
     /// @dev Vault must be below liquidation threshold
     /// @dev Applies liquidation penalty to the debt
-    function liquidate(uint256 vaultid) external;
+    function liquidate(uint256 vaultid) external returns (uint256 auctionId);
     function getEthPrice() external view returns (uint256);
 
 }
