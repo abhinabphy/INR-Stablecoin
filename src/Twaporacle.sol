@@ -4,7 +4,6 @@ pragma solidity 0.8.24;
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "./interfaces/ITwaporacle.sol";
 
-
 contract InrUsdOracle is ITwaporacle, AccessControl {
     bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
 
@@ -14,20 +13,16 @@ contract InrUsdOracle is ITwaporacle, AccessControl {
     uint256 private constant _VERSION = 1;
 
     struct Round {
-        int256 answer;          // price
-        uint256 startedAt;      // when submission for this round started (we set = updatedAt)
-        uint256 updatedAt;      // when it was last updated
+        int256 answer; // price
+        uint256 startedAt; // when submission for this round started (we set = updatedAt)
+        uint256 updatedAt; // when it was last updated
         uint80 answeredInRound; // round in which answer was computed
     }
 
     mapping(uint80 => Round) private _rounds;
     uint80 private _latestRoundId;
 
-    event AnswerUpdated(
-        int256 indexed current,
-        uint80 indexed roundId,
-        uint256 updatedAt
-    );
+    event AnswerUpdated(int256 indexed current, uint80 indexed roundId, uint256 updatedAt);
 
     constructor(address initialOracle) {
         // Deployer is admin (from SimpleAccessControl constructor)
@@ -61,12 +56,7 @@ contract InrUsdOracle is ITwaporacle, AccessControl {
         uint80 newRoundId = _latestRoundId + 1;
         uint256 time = block.timestamp;
 
-        _rounds[newRoundId] = Round({
-            answer: _answer,
-            startedAt: time,
-            updatedAt: time,
-            answeredInRound: newRoundId
-        });
+        _rounds[newRoundId] = Round({answer: _answer, startedAt: time, updatedAt: time, answeredInRound: newRoundId});
 
         _latestRoundId = newRoundId;
 
@@ -91,13 +81,7 @@ contract InrUsdOracle is ITwaporacle, AccessControl {
         external
         view
         override
-        returns (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        )
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
     {
         Round memory r = _rounds[_roundId];
         require(r.updatedAt != 0, "no data for round");
@@ -109,13 +93,7 @@ contract InrUsdOracle is ITwaporacle, AccessControl {
         external
         view
         override
-        returns (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        )
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
     {
         roundId = _latestRoundId;
         require(roundId != 0, "no data");
@@ -150,4 +128,3 @@ contract InrUsdOracle is ITwaporacle, AccessControl {
         return block.timestamp > updatedAt + maxAgeSeconds;
     }
 }
-

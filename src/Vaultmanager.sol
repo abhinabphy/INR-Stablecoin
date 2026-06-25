@@ -9,7 +9,7 @@ import "./Bharat.sol";
 import "./interfaces/ILiquidationEngine.sol";
 import "./interfaces/IVaultmanager.sol";
 
-contract Vaultmanager is ReentrancyGuard, IVaultmanager,Ownable {
+contract Vaultmanager is ReentrancyGuard, IVaultmanager, Ownable {
     ITwaporacle public pricefeed;
     Bharat public bharatToken;
     ILiquidationEngine public liquidationEngine;
@@ -17,10 +17,10 @@ contract Vaultmanager is ReentrancyGuard, IVaultmanager,Ownable {
     // ------------------- Constants -------------------
 
     uint256 public constant MIN_COLLATERISATION_RATIO = 150_000; // 150%
-    uint256 public constant LIQUIDATION_THRESHOLD = 130_000;     // 130%
+    uint256 public constant LIQUIDATION_THRESHOLD = 130_000; // 130%
     uint256 public constant PRECISION_BPS = 100_000;
     uint256 public constant SECONDS_IN_YEARS = 31_536_000;
-    uint256 public constant LIQUIDATION_PENALTY = 5_000;         // 5%
+    uint256 public constant LIQUIDATION_PENALTY = 5_000; // 5%
 
     // ------------------- State -------------------
 
@@ -29,8 +29,8 @@ contract Vaultmanager is ReentrancyGuard, IVaultmanager,Ownable {
 
     mapping(uint256 => address) public ownerOf;
     mapping(uint256 => Vault) public vaults;
-   
-   /// @inheritdoc IVaultmanager
+
+    /// @inheritdoc IVaultmanager
     struct Vault {
         uint256 collateral_amount;
         uint256 debt_amount;
@@ -40,11 +40,7 @@ contract Vaultmanager is ReentrancyGuard, IVaultmanager,Ownable {
 
     // ------------------- Constructor -------------------
 
-    constructor(
-        address _priceFeed,
-        address _bharatToken,
-        address _liquidationEngine
-    )Ownable(msg.sender) {
+    constructor(address _priceFeed, address _bharatToken, address _liquidationEngine) Ownable(msg.sender) {
         pricefeed = ITwaporacle(_priceFeed);
         bharatToken = Bharat(_bharatToken);
         liquidationEngine = ILiquidationEngine(_liquidationEngine);
@@ -145,12 +141,8 @@ contract Vaultmanager is ReentrancyGuard, IVaultmanager,Ownable {
         v.debt_amount = 0;
         v.seized = true;
 
-        uint256 auctionId=liquidationEngine.startAuction{ value: collateral }(
-            id,
-            collateral,
-            debtWithPenalty,
-            ownerOf[id]
-        );
+        uint256 auctionId =
+            liquidationEngine.startAuction{value: collateral}(id, collateral, debtWithPenalty, ownerOf[id]);
 
         emit Liquidated(id);
     }
@@ -165,9 +157,7 @@ contract Vaultmanager is ReentrancyGuard, IVaultmanager,Ownable {
         uint256 dt = block.timestamp - v.lastaccruedtime;
         if (dt == 0) return;
 
-        uint256 interest =
-            (v.debt_amount * STABILITY_FEE * dt)
-            / (PRECISION_BPS * SECONDS_IN_YEARS);
+        uint256 interest = (v.debt_amount * STABILITY_FEE * dt) / (PRECISION_BPS * SECONDS_IN_YEARS);
 
         v.debt_amount += interest;
         v.lastaccruedtime = block.timestamp;
@@ -189,8 +179,7 @@ contract Vaultmanager is ReentrancyGuard, IVaultmanager,Ownable {
     function _liquidationDebt(uint256 id) internal view returns (uint256) {
         Vault storage v = vaults[id];
 
-        uint256 penalty =
-            (v.debt_amount * LIQUIDATION_PENALTY) / PRECISION_BPS;
+        uint256 penalty = (v.debt_amount * LIQUIDATION_PENALTY) / PRECISION_BPS;
 
         return v.debt_amount + penalty;
     }
@@ -200,12 +189,14 @@ contract Vaultmanager is ReentrancyGuard, IVaultmanager,Ownable {
         require(price > 0, "Invalid price");
         return uint256(price);
     }
+
     function getEthPrice() external view returns (uint256) {
-    return _getEthPrice();
-}
-     /// @notice Set the liquidation engine address after deployment
+        return _getEthPrice();
+    }
+    /// @notice Set the liquidation engine address after deployment
     /// @param _liquidationEngine The address of the LiquidationEngine contract
-    function setLiquidationEngine(address _liquidationEngine) external onlyOwner() {
+
+    function setLiquidationEngine(address _liquidationEngine) external onlyOwner {
         require(address(liquidationEngine) == address(0), "Already set");
         liquidationEngine = ILiquidationEngine(_liquidationEngine);
     }

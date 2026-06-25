@@ -9,15 +9,14 @@ import "../src/Mocks/MockOracle.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./Base.t.sol";
 
-
 contract LiquidationEngineTest is Base {
-    using SafeERC20 for IERC20 ;
+    using SafeERC20 for IERC20;
     // LiquidationEngine public liquidationEngine;
     // Vaultmanager public vaultManager;
     // Bharat public bharatToken;
     // MockOracle public priceFeed;
 
-   function setUp() public override {
+    function setUp() public override {
         super.setUp(); // This runs the deployment logic in TestBase
     }
 
@@ -35,12 +34,11 @@ contract LiquidationEngineTest is Base {
     //     vaultManager.setLiquidationEngine(address(liquidationEngine));
     //     bharatToken.setVaultManager(address(vaultManager));
     //     vm.stopPrank();
-       
 
     // }
 
     function testDeposit() public {
-       vm.startPrank(user);
+        vm.startPrank(user);
         priceFeed.setPrice(3000 * 10 ** 8); // Set price to $200
         uint256 vaultId = vaultManager.openVault();
         uint256 collateralAmount = 1 ether; // 1 ETH
@@ -65,18 +63,15 @@ contract LiquidationEngineTest is Base {
     }
 
     function testLiquidation() public {
-        
         vm.deal(user, 10 ether);
 
-    
-        uint256 vaultId = setupVaultwithPrice(user, 1*10**18, 1000 * 10 ** 18, 3000 * 10 ** 8); // Collateral: 1 ETH, Debt: 1000 Bharat tokens, Price: $3000
+        uint256 vaultId = setupVaultwithPrice(user, 1 * 10 ** 18, 1000 * 10 ** 18, 3000 * 10 ** 8); // Collateral: 1 ETH, Debt: 1000 Bharat tokens, Price: $3000
         // Set price to trigger liquidation
         vm.startPrank(owner);
         priceFeed.setPrice(1000 * 10 ** 8); // Set price to $1000
 
-
         // Perform liquidation
-        uint256 auctionId=vaultManager.liquidate(vaultId);
+        uint256 auctionId = vaultManager.liquidate(vaultId);
 
         // Check vault state after liquidation
         (uint256 collateral, uint256 debt,,) = vaultManager.vaults(vaultId);
@@ -84,23 +79,20 @@ contract LiquidationEngineTest is Base {
         assertEq(debt, 0, "Debt should be cleared");
         //assertTrue(vaultManager.ownerOf(vaultId) == address(0), "Vault should be closed");
 
-  
-     
         vm.deal(AuctionBuyer, 10 ether);
         bharatToken.mint(AuctionBuyer, 100000000000 * 10 ** 18); // Mint Bharat tokens to AuctionBuyer
         vm.stopPrank();
-        
+
         //AuctionBuyer buys collateral from the auction pool
         vm.startPrank(AuctionBuyer);
         IERC20(bharatToken).approve(address(liquidationEngine), type(uint256).max);
-       liquidationEngine.buyCollateral(auctionId, 1.0 ether, type(uint256).max); // Buying 1 ETH collateral at max price of 3000 Bharat tokens
+        liquidationEngine.buyCollateral(auctionId, 1.0 ether, type(uint256).max); // Buying 1 ETH collateral at max price of 3000 Bharat tokens
         vm.stopPrank();
 
         //get the auction state after the purchase
-        (uint256 collateralRemaining, int256 debtToCover, uint256 currentPrice,bool settlementstatus) = liquidationEngine.getAuction(auctionId);
-
+        (uint256 collateralRemaining, int256 debtToCover, uint256 currentPrice, bool settlementstatus) =
+            liquidationEngine.getAuction(auctionId);
     }
-
 
     function testExample() public {
         assertTrue(true);
