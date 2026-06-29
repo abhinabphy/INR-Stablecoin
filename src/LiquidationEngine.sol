@@ -9,16 +9,14 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {SD59x18, sd, wrap, unwrap, convert} from "@prb-math/SD59x18.sol";
 
 contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Ownable {
-    using {sd} for int256;
     using SafeERC20 for IBharat;
 
     /// -----------------------------
     /// ---- Pricing Parameters -----
     /// -----------------------------
-    ///@notice parameter that controls initial price, stored as a 59x18 fixed precision number
+    ///@notice parameter that controls initial price
     struct Auction {
         ///@notice unique identifier for the auction
         uint256 id;
@@ -32,7 +30,7 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
         int256 debtToCover;
         ///@notice the time when the auction started, as a unix timestamp
         uint256 lastAuctionStartTime;
-        ///@notice the initial price of the collateral in terms of the stablecoin, stored as a 59x18 fixed point number
+        ///@notice the initial price of the collateral in terms of the stablecoin, stored as an 18-decimal fixed point number
         uint256 initialPrice;
         ///@notice if the auction has been settled
         bool settled;
@@ -40,15 +38,14 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
         address beneficiary;
     }
 
-    ///set the decay constant and emission rate for the auction pricing model
+    ///@notice parameter that controls the rate of price decay, stored as a percentage fraction per second scaled to 1e18
+    ///@dev e.g., 0.00019e18 means the auction drops by 0.019% of its initial price per second (~100% drop in ~1.46 hours)
     uint256 internal decayConstant = 0.00019e18; // scaled 1e18
-    uint256 internal emissionRate = 0.00027e18; // tokens-per-second scaled 1e18
-    uint256 internal constant SECONDS_IN_A_YEAR = 31_536_000; // 365 days
-    uint256 internal AuctionCount;
+    uint256 internal AuctionIdCounter;
+
     IVaultmanager public vaultManager;
     IBharat public bharatToken;
     ISurplusPool public surplusPool;
-    uint256 AuctionIdCounter;
 
     mapping(uint256 => Auction) public auctions;
 
@@ -59,21 +56,19 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
     event RefundCredited(address indexed user, address indexed paymentToken, uint256 amount);
     event AuctionEnded(uint256 indexed auctionId);
     event Withdrawn(address indexed to, address indexed token, uint256 amount);
-    //@notice parameter that controls the rate of price decay, stored as a 59x18
 
     constructor(
         address _vaultManager,
         address _bharatToken,
         uint256 _decayConstant,
-        uint256 _emissionRate,
         address surpluspool
     ) Ownable(msg.sender) {
         vaultManager = IVaultmanager(_vaultManager);
         decayConstant = _decayConstant;
-        emissionRate = _emissionRate;
         bharatToken = IBharat(_bharatToken);
         surplusPool = ISurplusPool(surpluspool);
     }
+
     //modifiers
 
     modifier onlyVaultManager() {
@@ -105,16 +100,16 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
         auction.lastAuctionStartTime = block.timestamp;
         auction.settled = false;
         auction.beneficiary = vaultOwner;
-        auction.initialPrice = price_of_eth * 1e10; // Set the floor price based on the TWAP oracle price
+        auction.initialPrice = price_of_eth * 1e10; // Converts 8-decimal oracle price to standard 18-decimal unit price
         emit AuctionStarted(AuctionIdCounter, vaultId, collateralETH, debtToCoverForAuction);
         AuctionIdCounter++;
         return auctionId;
     }
+
     ///@notice allows a user to buy collateral from an active auction by paying the current price in Bharat stablecoins
     ///@param auctionId The ID of the auction from which to buy collateral
     ///@param collateralAmount The amount of collateral the user wants to buy (in wei)
     ///@param maxAcceptablePrice The maximum price the user is willing to pay for the collateral (in Bharat stablecoins)
-
     function buyCollateral(uint256 auctionId, uint256 collateralAmount, uint256 maxAcceptablePrice)
         external
         payable
@@ -127,53 +122,58 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
         require(collateralAmount <= uint256(type(int256).max), "Value doesn't fit in int256");
         require(collateralAmount > 0, "Stable amount must be greater than zero");
         require(auction.collateralRemaining >= collateralAmount, "Not enough collateral remaining");
-        //use SD59x18 to calculate the current price of the collateral based on the auction parameters
-        SD59x18 quantityFixed = wrap(int256(collateralAmount));
-        int256 timeElapsed = int256(block.timestamp - auction.lastAuctionStartTime);
-        SD59x18 timeElapsedFixed = convert(timeElapsed);
-        SD59x18 decayFixed = wrap(int256(decayConstant));
-        SD59x18 emissionRateFixed = wrap(int256(emissionRate));
-        SD59x18 initialPriceFixed = wrap(int256(auction.initialPrice));
-        uint256 currentPrice =
-            purchasePrice(quantityFixed, timeElapsedFixed, decayFixed, initialPriceFixed, emissionRateFixed);
+
+        uint256 currentPrice = purchasePrice(
+            collateralAmount, auction.lastAuctionStartTime, decayConstant, auction.initialPrice
+        );
         require(currentPrice <= maxAcceptablePrice, "Current price exceeds max acceptable price");
         //require allowed payment is sent with the transaction
         IBharat(bharatToken).safeTransferFrom(msg.sender, address(this), currentPrice);
 
         // EFFECTS: update auction state BEFORE transferring collateral
-        // compute seconds-of-emissions purchased = quantity / emissionRate (all in 59.18)
-        SD59x18 secondsOfEmissionsPurchased = quantityFixed.div(emissionRateFixed);
-        // compute new lastAuctionStartTime = lastAuctionStartTime + secondsOfEmissionsPurchased
-        auction.lastAuctionStartTime += uint256(unwrap(secondsOfEmissionsPurchased));
+        // Linear lot auctions decay predictably over time; continuous timeline modifications are omitted.
         auction.collateralRemaining -= collateralAmount;
         auction.debtToCover -= int256(currentPrice);
+        
         //transfer the collateral to the buyer
         (bool success,) = msg.sender.call{value: collateralAmount}("");
         require(success, "Transfer failed.");
         emit Purchased(auctionId, msg.sender, collateralAmount, currentPrice);
+        
         //if the debtToCover is non positive, mark the auction as settled and transfer any remaining collateral to the beneficiary
         if (auction.debtToCover <= 0 || auction.collateralRemaining == 0) {
             settleAuction(auctionId);
         }
     }
+
     ///@notice calculates the current purchase price of the collateral based on the auction parameters
     ///and the time elapsed since the auction started
-    /// Compute GDA price per ContinuousGDA formula:
-    /// totalCost = (initialPrice / decay) * (exp(decay * quantity / emissionRate) - 1) / exp(decay * timeSinceLast)
-    /// All operations in 59.18 fixed point.
-
+    /// Compute Price per Percentage-Based Linear Dutch Auction formula:
+    /// dropPercentage = timeElapsed * decayConstant
+    /// UnitPrice = max(0, initialPrice - (initialPrice * dropPercentage))
+    /// totalCost = (collateralAmount * UnitPrice) / 1e18
     function purchasePrice(
-        SD59x18 _quantityFixed,
-        SD59x18 _timeElapsedFixed,
-        SD59x18 _decayFixed,
-        SD59x18 initialPrice,
-        SD59x18 emissionRateFixed
-    ) internal view returns (uint256) {
-        SD59x18 expDecayQuantity = ((_decayFixed.mul(_quantityFixed)).div(emissionRateFixed)).exp();
-        SD59x18 expDecayTime = (_decayFixed.mul(_timeElapsedFixed)).exp();
-        SD59x18 numerator = initialPrice.div(_decayFixed).mul(expDecayQuantity.sub(wrap(1e18)));
-        SD59x18 totalCost = numerator.div(expDecayTime);
-        return uint256(unwrap(totalCost));
+        uint256 collateralAmount,
+        uint256 _lastAuctionStartTime,
+        uint256 _decayConstant,
+        uint256 initialPrice
+    ) public view returns (uint256) {
+        uint256 timeElapsed = block.timestamp - _lastAuctionStartTime;
+        
+        // Calculate the percentage drop: (timeElapsed * decayConstant)
+        uint256 dropPercentage = timeElapsed * _decayConstant;
+        
+        uint256 currentPricePerUnit;
+        if (dropPercentage >= 1e18) {
+            currentPricePerUnit = 0; // Fully decayed to floor price
+        } else {
+            // Linearly scale down the starting initial price by the elapsed percentage fraction
+            uint256 priceLoss = (initialPrice * dropPercentage) / 1e18;
+            currentPricePerUnit = initialPrice - priceLoss;
+        }
+        
+        // Return total cost based on the exact asset slice requested
+        return (collateralAmount * currentPricePerUnit) / 1e18;
     }
 
     function settleAuction(uint256 auctionId) internal {
@@ -191,15 +191,13 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
         }
         if (auction.debtToCover < 0) {
             uint256 negativeDebt = uint256(-auction.debtToCover);
-            auction.collateralRemaining = 0;
+            auction.debtToCover = 0;
             bharatToken.safeTransfer(recipient, negativeDebt);
         }
-        auction.settled = true;
         emit AuctionEnded(auctionId);
     }
     //Helper Functions
     /// @notice Returns the core state of the auction
-
     function getAuction(uint256 auctionId)
         external
         view
@@ -219,16 +217,11 @@ contract LiquidationEngine is ILiquidationEngine, ReentrancyGuard, Pausable, Own
         require(auction.lastAuctionStartTime > 0, "Auction does not exist");
         require(amountToBuy > 0 && amountToBuy <= auction.collateralRemaining, "Invalid amount");
 
-        // Use the exact same math setup as buyCollateral
-        SD59x18 quantityFixed = int256(amountToBuy).sd();
-        int256 timeElapsed = int256(block.timestamp - auction.lastAuctionStartTime);
-        SD59x18 timeElapsedFixed = wrap(timeElapsed);
-        SD59x18 decayFixed = int256(decayConstant).sd();
-        SD59x18 emissionRateFixed = int256(emissionRate).sd();
-        SD59x18 initialPriceFixed = int256(auction.initialPrice).sd();
-
-        return purchasePrice(quantityFixed, timeElapsedFixed, decayFixed, initialPriceFixed, emissionRateFixed);
+        return purchasePrice(
+            amountToBuy, auction.lastAuctionStartTime, decayConstant, auction.initialPrice
+        );
     }
+    
     // ==========================================
     //            ADMIN FUNCTIONS
     // ==========================================
